@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Accessible focus: visible outline when navigating by keyboard (fallback for focusable elements without ring) */
+@layer base {
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid #f97316;
+    outline-offset: 2px;
+  }
+  /* Suppress duplicate outline when focus-visible ring is used */
+  [class*='focus-visible:ring']:focus-visible {
+    outline: none;
+  }
+}
