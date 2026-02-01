@@ -12,9 +12,9 @@ dotenv.config();
 
 const app = express();
 
-// -------------------------
-// Security headers
-// -------------------------
+/* -------------------------
+   Security headers (basic)
+------------------------- */
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -27,71 +27,68 @@ app.use((req, res, next) => {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https:",
       "font-src 'self' data:",
-      // allow your backend to call Anthropic (server-side), and browser to call same origin
       "connect-src 'self' https://api.anthropic.com",
       "base-uri 'self'",
-      "form-action 'self'",
+      "form-action 'self'"
     ].join("; ")
   );
   res.setHeader("X-XSS-Protection", "1; mode=block");
   next();
 });
 
-// -------------------------
-// Body parsing
-// -------------------------
+/* -------------------------
+   JSON body limit
+------------------------- */
 app.use(express.json({ limit: "50kb" }));
 
-// -------------------------
-// CORS (safe for assignment)
-// -------------------------
-// For grading, keep it simple: allow localhost + your App Runner domain.
-// (You can still restrict further later.)
-const APP_RUNNER_DOMAIN = "https://aervpu3nvk.us-east-1.awsapprunner.com";
-
+/* -------------------------
+   CORS (allow localhost + your App Runner domain)
+   This avoids browser blocking.
+------------------------- */
+const APP_RUNNER_ORIGIN = "https://aervpu3nvk.us-east-1.awsapprunner.com";
 const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://localhost:3000",
-  APP_RUNNER_DOMAIN,
+  APP_RUNNER_ORIGIN
 ]);
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      // same-origin or server-to-server requests may have no Origin
+      // same-origin or server-to-server calls can have no origin
       if (!origin) return cb(null, true);
       if (allowedOrigins.has(origin)) return cb(null, true);
       return cb(null, false);
     },
     methods: ["GET", "POST"],
     credentials: false,
-    maxAge: 86400,
+    maxAge: 86400
   })
 );
 
-// -------------------------
-// Rate limiting for /api
-// -------------------------
+/* -------------------------
+   Rate limit API
+------------------------- */
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
   message: { error: "Too many requests. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path === "/health",
+  skip: (req) => req.path === "/health"
 });
 app.use("/api", limiter);
 
-// -------------------------
-// Health check
-// -------------------------
+/* -------------------------
+   Health endpoint
+------------------------- */
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// -------------------------
-// Validation helpers
-// -------------------------
+/* -------------------------
+   Validation helpers
+------------------------- */
 function isNonEmptyString(v) {
   return typeof v === "string" && v.trim().length > 0;
 }
@@ -129,9 +126,10 @@ function validateDietary(dietary) {
   return { valid: true, value: dietary.filter((x) => ALLOWED.includes(x)).slice(0, 6) };
 }
 
-// -------------------------
-// API: Generate recipes
-// -------------------------
+/* -------------------------
+   API: recipes
+   Assignment-safe: returns mock recipes if no ANTHROPIC_API_KEY
+------------------------- */
 app.post("/api/recipes", async (req, res) => {
   try {
     const body = req.body && typeof req.body === "object" ? req.body : {};
@@ -143,9 +141,9 @@ app.post("/api/recipes", async (req, res) => {
     const timeV = validateCookingTime(cookingTime);
     if (!timeV.valid) return res.status(400).json({ error: timeV.error });
 
-    const dietV = validateDietary(dietary);
+    validateDietary(dietary); // not required for mock, but validates input shape
 
-    // ✅ ASSIGNMENT MODE (NO BILLING): If no key, always return mock recipes
+    // ✅ Mock recipes (NO billing required)
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       return res.json({
@@ -161,8 +159,8 @@ app.post("/api/recipes", async (req, res) => {
               "Cook rice according to package instructions.",
               "Heat oil in a pan and sauté vegetables.",
               "Add soy sauce and mix well.",
-              "Serve vegetables over rice.",
-            ],
+              "Serve vegetables over rice."
+            ]
           },
           {
             name: "Simple Veg Fried Rice",
@@ -175,111 +173,41 @@ app.post("/api/recipes", async (req, res) => {
               "Heat pan and add vegetables.",
               "Add cooked rice and stir.",
               "Add soy sauce and mix evenly.",
-              "Serve hot.",
-            ],
-          },
-          {
-            name: "Quick Pantry Stir-Fry",
-            difficulty: "Easy",
-            prepTime: 10,
-            cookTime: 15,
-            cuisine: "Asian",
-            ingredients: ["Any vegetables you have", "1 tbsp oil", "Salt/pepper", "Optional soy sauce"],
-            instructions: [
-              "Chop vegetables.",
-              "Stir-fry in oil until tender.",
-              "Season to taste.",
-              "Serve with rice or bread.",
-            ],
-          },
-        ],
+              "Serve hot."
+            ]
+          }
+        ]
       });
     }
 
-    // If you ever enable billing later, this part will work too:
-    const sanitizedIngredients = ingV.value;
-    const validTime = timeV.value;
-    const validDietary = dietV.value;
-
-    const dietaryText =
-      validDietary.length > 0 ? `Dietary requirements: ${validDietary.join(", ")}.` : "";
-
-    const prompt = `You are a professional chef. Generate 3 recipe suggestions based on:
-Available ingredients: ${sanitizedIngredients}
-Max cooking time: ${validTime} minutes
-${dietaryText}
-
-Respond ONLY with a JSON array like:
-[
-  {
-    "name": "Recipe Name",
-    "difficulty": "Easy",
-    "prepTime": 10,
-    "cookTime": 20,
-    "cuisine": "Italian",
-    "ingredients": ["1 cup rice", "2 chicken breasts"],
-    "instructions": ["Step 1", "Step 2", "Step 3"]
-  }
-]`;
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
-
-    let response;
-    try {
-      response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-3-5-sonnet-latest",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: prompt }],
-        }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!response.ok) {
-      return res.status(502).json({ error: "Recipe service unavailable. Try again later." });
-    }
-
-    const data = await response.json();
-    const text = data?.content?.[0]?.text || "";
-    const match = text.match(/\[[\s\S]*\]/);
-    if (!match) return res.status(502).json({ error: "Invalid recipe response." });
-
-    const parsed = JSON.parse(match[0]);
-    return res.json({ recipes: parsed });
-  } catch (err) {
+    // If you ever add billing later, you can implement the Anthropic call here.
+    return res.status(501).json({
+      error: "Anthropic mode not enabled for assignment. Remove this if you later add billing."
+    });
+  } catch {
     return res.status(500).json({ error: "Something went wrong. Please try again later." });
   }
 });
 
-// -------------------------
-// Serve React build (dist) — IMPORTANT
-// -------------------------
+/* -------------------------
+   Serve React build (dist)
+   dist is at project root: ../dist
+------------------------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// dist is one level above /backend
 const distPath = path.join(__dirname, "../dist");
 app.use(express.static(distPath));
 
-// SPA fallback must be AFTER API routes
-app.get("*", (req, res) => {
+// Must be AFTER API routes
+// SPA fallback – Express 5 compatible
+app.get(/^(?!\/api\/).*/, (req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
 
-// -------------------------
-// Start server
-// -------------------------
+
+/* -------------------------
+   Start server (App Runner uses PORT env)
+------------------------- */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  // keep silent in production
-});
+app.listen(PORT, () => {});
